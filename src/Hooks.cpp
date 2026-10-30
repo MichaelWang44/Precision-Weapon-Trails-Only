@@ -16,14 +16,18 @@ namespace Hooks
         // Skyrim's on-disk Steam image has an encoded .text section. Validate
         // the live image before writing either call site, failing closed.
         for (auto address : {
-                 REL::Relocation<uintptr_t>(RELOCATION_ID(35565, 36564)).address() + 0xC26,
-                 REL::Relocation<uintptr_t>(RELOCATION_ID(38112, 39068)).address() + 0xFC }) {
+                 REL::Relocation<uintptr_t>(RELOCATION_ID(35565, 36564)).address() + RELOCATION_OFFSET(0x748, 0xC26),
+                 REL::Relocation<uintptr_t>(RELOCATION_ID(38112, 39068)).address() + RELOCATION_OFFSET(0x104, 0xFC) }) {
             if (*reinterpret_cast<const uint8_t*>(address) != 0xE8) {
                 logger::critical("TrailsOnly hook validation failed at {:X}: expected E8, found {:02X}", address, *reinterpret_cast<const uint8_t*>(address));
                 return false;
             }
         }
+#ifdef TARGET_SKYRIM_SE_1597
+        logger::info("TrailsOnly: live 1.5.97 call-site opcode checks passed");
+#else
         logger::info("TrailsOnly: live 1.6.1170 call-site opcode checks passed");
+#endif
         return true;
     }
 

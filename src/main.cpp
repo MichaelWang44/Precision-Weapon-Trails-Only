@@ -75,10 +75,17 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Query(const SKSE::QueryInterface* a
 	}
 
 	const auto ver = a_skse->RuntimeVersion();
+#ifdef TARGET_SKYRIM_SE_1597
+	if (ver != SKSE::RUNTIME_SSE_1_5_97) {
+		logger::critical(FMT_STRING("TrailsOnly (1.5.97 build) requires Skyrim SE 1.5.97, found {}"), ver.string());
+		return false;
+	}
+#else
 	if (ver < SKSE::RUNTIME_SSE_1_5_39) {
 		logger::critical(FMT_STRING("Unsupported runtime version {}"), ver.string());
 		return false;
 	}
+#endif
 
 	return true;
 }
@@ -90,8 +97,13 @@ extern "C" DLLEXPORT constinit auto SKSEPlugin_Version = []() {
 	v.PluginName(Plugin::NAME);
 	v.AuthorName("Ersh");
 	v.UsesAddressLibrary(true);
+#ifdef TARGET_SKYRIM_SE_1597
+	v.CompatibleVersions({ SKSE::RUNTIME_SSE_1_5_97 });
+	v.HasNoStructUse(true);
+#else
 	v.CompatibleVersions({ REL::Version{1, 6, 1170, 0} });
 	v.UsesStructsPost629();
+#endif
 
 	return v;
 }();
@@ -108,11 +120,19 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 	logger::info("{} v{}"sv, Plugin::NAME, Plugin::VERSION.string());
 
 
+#ifdef TARGET_SKYRIM_SE_1597
+    if (a_skse->RuntimeVersion() != SKSE::RUNTIME_SSE_1_5_97) {
+        logger::critical("TrailsOnly (1.5.97 build) requires Skyrim SE 1.5.97");
+        return false;
+    }
+    logger::info("Precision 2.0.4 - Weapon Trails Only for Skyrim SE 1.5.97 (source e094209; no combat/physics hooks)");
+#else
     if (a_skse->RuntimeVersion() != REL::Version{1, 6, 1170, 0}) {
         logger::critical("TrailsOnly requires Skyrim 1.6.1170");
         return false;
     }
     logger::info("Precision 2.0.4 - Weapon Trails Only (source e094209; no combat/physics hooks)");
+#endif
 	SKSE::Init(a_skse);
 	SKSE::AllocTrampoline(1 << 10);
 

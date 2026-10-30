@@ -92,6 +92,14 @@ target_compile_features(
 		cxx_std_20
 )
 
+if(BUILD_FOR_SKYRIM_SE_1597)
+	target_compile_definitions(
+		"${PROJECT_NAME}"
+		PRIVATE
+			TARGET_SKYRIM_SE_1597=1
+	)
+endif()
+
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 	target_compile_options(
 		"${PROJECT_NAME}"

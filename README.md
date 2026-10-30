@@ -1,10 +1,10 @@
 # Precision - Weapon Trails Only
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Skyrim SE](https://img.shields.io/badge/Skyrim%20SE-1.6.1170-blue.svg)](https://store.steampowered.com/app/489830)
+[![Skyrim SE](https://img.shields.io/badge/Skyrim%20SE-1.5.97%20%7C%201.6.1170-blue.svg)](https://store.steampowered.com/app/489830)
 [![Precision Baseline](https://img.shields.io/badge/Precision%20Baseline-v2.0.4%20(e094209)-brightgreen.svg)](https://github.com/ersh1/Precision/commit/e094209bff698a0739b3a881dfdfa3b1697267d8)
 
-A visual-only fork of Ersh's renowned [Precision - Accurate Melee Collisions](https://github.com/ersh1/Precision) (v2.0.4 baseline, commit `e094209`) specifically adapted for **The Elder Scrolls V: Skyrim Special Edition 1.6.1170**.
+A visual-only fork of Ersh's renowned [Precision - Accurate Melee Collisions](https://github.com/ersh1/Precision) (v2.0.4 baseline, commit `e094209`) with dedicated builds for **Skyrim SE 1.6.1170** and **Skyrim SE 1.5.97**.
 
 ---
 
@@ -28,7 +28,7 @@ Only 3 visual-critical hooks are installed:
 - `HavokHooks::Hook()`: Retains only the `_ProcessHavokHitJobs` scheduling call to flag visual actor updates. The callback invokes the original game function untouched and never executes Havok contact listeners, collision filtering, or skeleton cloning.
 - `FirstPersonStateHook::Hook()`: Retains visual anchor cleanup when switching between first-person and third-person perspectives.
 - **Omitted Hooks**: `AttackHooks`, `AIHooks`, `CameraShakeHook`, `MovementHook`, and all ragdoll/Havok collision hooks are completely absent.
-- **Runtime Validation**: Validates Skyrim runtime `1.6.1170.0` and verifies opcode `0xE8` (call) at relocation sites before patching.
+- **Runtime Validation**: Validates target Skyrim runtime (`1.6.1170.0` or `1.5.97.0` per build target) and verifies opcode `0xE8` (call) at relocation sites before patching.
 
 ### 2. Pure Visual `ActiveActor` & Event Queue
 - `ActiveActor` provides a visual-only constructor that tracks animation graph states, current cell, and scale generation counter without cloning Havok physics skeletons or allocating collision groups.
@@ -49,9 +49,9 @@ Only 3 visual-critical hooks are installed:
 ## Requirements
 
 ### Runtime Requirements
-- [The Elder Scrolls V: Skyrim Special Edition](https://store.steampowered.com/app/489830) (v1.6.1170.0)
-- [SKSE64](https://skse.silverlock.org/) (matching runtime 1.6.1170)
-- [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444)
+- [The Elder Scrolls V: Skyrim Special Edition](https://store.steampowered.com/app/489830) (`v1.6.1170.0` or `v1.5.97.0` using the matching build)
+- [SKSE64](https://skse.silverlock.org/) (matching your game runtime)
+- [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444) (All in one for 1.6.X or 1.5.X respectively)
 
 ### Build Requirements
 - [Visual Studio Community 2022](https://visualstudio.microsoft.com/) (Desktop development with C++, MSVC v143+)
@@ -68,11 +68,13 @@ Only 3 visual-critical hooks are installed:
 git clone --recurse-submodules https://github.com/MichaelWang44/Precision-Weapon-Trails-Only.git
 cd Precision-Weapon-Trails-Only
 
-# Configure with CMake (Visual Studio 2022 or Ninja)
+# Default build (Skyrim SE/AE 1.6.1170)
 cmake --preset vs2022-windows
-
-# Build Release
 cmake --build build --config Release
+
+# Dedicated Skyrim SE 1.5.97 build
+cmake -B build-1597 -DBUILD_FOR_SKYRIM_SE_1597=ON
+cmake --build build-1597 --config Release
 ```
 
 ---
