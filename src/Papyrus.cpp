@@ -20,12 +20,8 @@ namespace Papyrus
 
 	bool Precision_Utility::IsActorActive(RE::StaticFunctionTag*, RE::Actor* a_actor)
 	{
-		if (a_actor) {
-			return PrecisionHandler::IsActorActive(a_actor->GetHandle());
-		}
-
-		return false;
-	}
+    return false; // Physical Precision participation is disabled.
+}
 
 	bool Precision_Utility::ToggleDisableActor(RE::StaticFunctionTag*, RE::Actor* a_actor, bool a_bDisable)
 	{

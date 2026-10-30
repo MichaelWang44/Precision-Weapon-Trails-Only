@@ -7,7 +7,14 @@ struct ActiveActor
 public:
 	ActiveActor(RE::ActorHandle a_actorHandle, RE::NiAVObject* a_root, RE::NiAVObject* a_clone, uint16_t a_currentCollisionGroup, CollisionLayer a_collisionLayer);
 
-	~ActiveActor();
+
+    ActiveActor(RE::ActorHandle a_actorHandle, RE::NiAVObject* a_root);
+    ~ActiveActor();
+    bool visualOnly = false;
+    std::atomic<uint64_t> visualGeneration = 0;
+    std::vector<RE::BSTSmartPointer<RE::BShkbAnimationGraph>> visualGraphs;
+    RE::TESObjectCELL* visualCell = nullptr;
+
 
 	void Update(float a_deltaTime);
 	bool UpdateClone();

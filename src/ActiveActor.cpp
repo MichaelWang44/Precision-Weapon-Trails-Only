@@ -25,8 +25,26 @@ ActiveActor::ActiveActor(RE::ActorHandle a_actorHandle, RE::NiAVObject* a_root, 
 	}
 }
 
+
+ActiveActor::ActiveActor(RE::ActorHandle a_actorHandle, RE::NiAVObject* a_root) :
+    actorHandle(a_actorHandle), root(a_root), collisionGroup(0), collisionLayer(CollisionLayer::kPrecisionBody), visualOnly(true)
+{
+    if (auto actor = actorHandle.get()) {
+        actorScale = actor->GetScale();
+        visualCell = actor->GetParentCell();
+    }
+}
+
 ActiveActor::~ActiveActor()
 {
+
+    if (visualOnly) {
+        for (auto& graph : visualGraphs) {
+            graph->GetEventSource<RE::BSAnimationGraphEvent>()->RemoveEventSink(PrecisionHandler::GetSingleton());
+        }
+        attackCollisions.RemoveAllAttackCollisions();
+        return;
+    }
 	// Remove from active collision groups
 	WriteLocker locker(PrecisionHandler::activeCollisionGroupsLock);
 
@@ -36,23 +54,6 @@ ActiveActor::~ActiveActor()
 void ActiveActor::Update(float a_deltaTime)
 {
 	attackCollisions.Update(a_deltaTime);
-
-	if (inCombat > 0.f) {
-		inCombat = std::max(inCombat - a_deltaTime, 0.f);
-	}
-
-	if (receivedHitstopCooldown > 0.f) {
-		receivedHitstopCooldown -= a_deltaTime;
-		if (receivedHitstopCooldown <= 0.f) {
-			receivedHitstopCount = 0;
-			receivedHitstopCooldown = 0.f;
-		}
-	}
-
-	if (Settings::bDebug && Settings::bDisplaySkeletonColliders) {
-		glm::vec4 color{ 1.f, 0.5f, 0.f, 1.f };
-		Utils::DrawActorColliders(actorHandle, clone.get(), 0.f, color);
-	}
 }
 
 bool ActiveActor::UpdateClone()

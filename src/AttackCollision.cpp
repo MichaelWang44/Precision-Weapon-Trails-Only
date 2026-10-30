@@ -71,13 +71,11 @@ AttackCollision::AttackCollision(RE::ActorHandle a_actorHandle, const CollisionD
 
 						// add trail
 						if (bShowTrail) {
-							PrecisionHandler::GetSingleton()->_attackTrails.emplace_back(std::make_shared<AttackTrail>(attackCollisionNode.get(), actorHandle, cell, weaponItem, bIsLeftHand, Settings::bTrailUseAttackCollisionLength ? true : a_collisionDefinition.bTrailUseTrueLength, a_collisionDefinition.trailOverride));
+							PrecisionHandler::GetSingleton()->_attackTrails.emplace_back(std::make_shared<AttackTrail>(attackCollisionNode.get(), actorHandle, cell, weaponItem, bIsLeftHand, Settings::bTrailUseAttackCollisionLength ? true : a_collisionDefinition.bTrailUseTrueLength, a_collisionDefinition.trailOverride, trailFallbackLength));
 						}
 					}
 
-					Utils::Capsule capsule;
-					Utils::GetCapsuleParams(attackCollisionNode.get(), capsule);
-					capsuleLength = fmax(capsule.a.GetDistance(capsule.b), capsule.radius * 2.f);
+// Visual geometry was calculated by Add without creating physics shapes.
 
 					ID = a_collisionDefinition.ID;
 					bNoRecoil = a_collisionDefinition.bNoRecoil;
@@ -127,6 +125,8 @@ AttackCollision::~AttackCollision()
 bool AttackCollision::Add(const CollisionDefinition& a_collisionDefinition)
 {
 	auto actor = actorHandle.get().get();
+    if (a_collisionDefinition.bNoTrail || !Settings::bDisplayTrails ||
+        (nodeName != "WEAPON" && nodeName != "SHIELD")) { return false; }
 	if (!actor) {
 		return false;
 	}
@@ -136,10 +136,7 @@ bool AttackCollision::Add(const CollisionDefinition& a_collisionDefinition)
 		return false;
 	}
 
-	auto world = cell->GetbhkWorld();
-	if (!world) {
-		return false;
-	}
+
 
 	auto root = actor->Get3D();
 	if (!root) {
@@ -156,6 +153,14 @@ bool AttackCollision::Add(const CollisionDefinition& a_collisionDefinition)
 		return false;
 	}
 
+
+    auto process = actor->GetActorRuntimeData().currentProcess;
+    if (!process || !process->middleHigh || actor->AsActorState()->GetAttackState() == RE::ATTACK_STATE_ENUM::kBash) { return false; }
+    auto item = nodeName == "WEAPON" ? process->middleHigh->rightHand : process->middleHigh->leftHand;
+    auto weapon = item && item->object ? item->object->As<RE::TESObjectWEAP>() : nullptr;
+    if (!weapon || weapon->weaponData.animationType == RE::WEAPON_TYPE::kHandToHandMelee) { return false; }
+    visualRoot.reset(root);
+    visualCell = cell;
 	float length = 0.f;
 	float radius = 0.f;
 	RE::hkVector4 vertexA{};
@@ -324,36 +329,12 @@ bool AttackCollision::Add(const CollisionDefinition& a_collisionDefinition)
 		attackNode->local.rotate = newRotation;
 	}
 
-	CreateCollision(world, actor, node, attackNode, vertexA, vertexB, radius, CollisionLayer::kPrecisionAttack);
 
-	attackCollisionNode = RE::NiPointer<RE::NiNode>(attackNode);
-
-	// Create recoil collision node
-	bool bIsPlayer = actor->IsPlayerRef();
-	if (!a_collisionDefinition.bWeaponTip && !a_collisionDefinition.bNoRecoil && !bIsBashing &&
-		(bIsRightWeapon || bIsLeftWeapon) &&
-		((bIsPlayer && Settings::bRecoilPlayer) || (!bIsPlayer && Settings::bRecoilNPC))) {
-		auto recoilNode = RE::NiNode::Create(0);
-		node->AttachChild(recoilNode, true);
-
-		if (a_collisionDefinition.transform) {
-			recoilNode->local = *a_collisionDefinition.transform;
-		}
-
-		RE::NiMatrix3 weaponRotation(0.f, RE::NI_HALF_PI, -RE::NI_HALF_PI);
-		RE::NiMatrix3 newRotation = weaponRotation * recoilNode->local.rotate;
-		recoilNode->local.rotate = newRotation;
-
-		RE::hkVector4 recoilVertexA{};
-		RE::hkVector4 recoilVertexB{};
-		float recoilRadius = radius;
-
-		recoilVertexA.quad.m128_f32[0] = Settings::fRecoilCollisionLength * actor->GetScale() * havokWorldScale;
-
-		CreateCollision(world, actor, node, recoilNode, recoilVertexA, recoilVertexB, recoilRadius, CollisionLayer::kPrecisionRecoil);
-
-		recoilCollisionNode = RE::NiPointer<RE::NiNode>(recoilNode);
-	}
+    // Geometry only: no bhkCollisionObject, no rigid body and no world registration.
+    attackCollisionNode = RE::NiPointer<RE::NiNode>(attackNode);
+    const float axisLength = Utils::HkVectorToNiPoint(vertexA).GetDistance(Utils::HkVectorToNiPoint(vertexB)) * havokInvWorldScale;
+    trailFallbackLength = fmax(axisLength, radius * havokInvWorldScale);
+    capsuleLength = fmax(axisLength, radius * 2.f * havokInvWorldScale);
 
 	return true;
 }
@@ -486,218 +467,29 @@ uint32_t AttackCollision::GetDamagedCount() const
 
 bool AttackCollision::Update(float a_deltaTime)
 {
-	if (Settings::bDebug && Settings::bDisplayWeaponCapsule) {
-		constexpr glm::vec4 attackColor{ 1, 0, 0, 1 };
-		constexpr glm::vec4 recoilColor{ 0.2, 0.2, 0.8, 1 };
-		Utils::DrawCollider(attackCollisionNode.get(), 0.f, attackColor);
-		Utils::DrawCollider(recoilCollisionNode.get(), 0.f, recoilColor);
-	}
-
-	if (lastUpdate == *g_durationOfApplicationRunTimeMS) {
-		return true;
-	}
-
-	lastUpdate = *g_durationOfApplicationRunTimeMS;
-
-	auto actor = actorHandle.get();
-	if (!actor) {
-		return false;
-	}
-
-	if (actor->IsPlayerRef()) {
-		a_deltaTime *= Utils::GetPlayerTimeMultiplier();
-	}
-
-	a_deltaTime *= PrecisionHandler::GetSingleton()->GetHitstopMultiplier(actorHandle, a_deltaTime);
-
-	_hitRefs.Update(a_deltaTime);
-
-	// remove hit materials after cooldown
-	{
-		WriteLocker locker(hitMaterialsLock);
-
-		for (auto it = _hitMaterials.begin(); it != _hitMaterials.end();) {
-			it->second -= a_deltaTime;
-			if (it->second <= 0.f) {
-				it = _hitMaterials.erase(it);
-			} else {
-				++it;
-			}
-		}
-	}
-
-	auto cell = actor->GetParentCell();
-	if (!cell) {
-		return false;
-	}
-
-	// water splash
-	if (Settings::bEnableWaterSplashes && lastUpdate - lastSplashUpdate > Settings::iWaterSplashCooldownMs) {
-		if (attackCollisionNode) {
-			RE::NiPoint3 currentPos = attackCollisionNode->world.translate;
-
-			float waterHeight;
-			if (cell->GetWaterHeight(currentPos, waterHeight)) {
-				Utils::Capsule capsule;
-				GetCapsuleParams(attackCollisionNode.get(), capsule);
-				capsule.a = (attackCollisionNode->world.rotate * capsule.a) + currentPos;
-				capsule.b = (attackCollisionNode->world.rotate * capsule.b) + currentPos;
-
-				if ((capsule.a.z > waterHeight && capsule.b.z < waterHeight) || (capsule.a.z < waterHeight && capsule.b.z > waterHeight)) {
-					constexpr RE::NiPoint3 upVector{ 0.f, 0.f, 1.f };
-
-					RE::NiPoint3 line = capsule.b - capsule.a;
-
-					// calc line plane intersection
-					float dot = upVector.Dot(capsule.a);
-					float dot2 = upVector.Dot(line);
-
-					if (dot2 != 0.f) {
-						RE::NiPoint3 intersection = capsule.a + (line * ((waterHeight - dot) / dot2));
-
-						//RE::BSSoundHandle soundHandle{};
-						//auto audioManager = RE::BSAudioManager::GetSingleton();
-						//audioManager->BuildSoundDataFromEditorID(soundHandle, "CWaterSmall", 17);
-						//if (soundHandle.IsValid()) {
-						//	BSSoundHandle_SetPosition(&soundHandle, intersection.x, intersection.y, intersection.z);
-						//	//soundHandle.SetPosition(intersection);
-						//	soundHandle.Play();
-						//}
-						//RE::BSTempEffectParticle::Spawn(cell, 1.0, "Effects/waterSplash.NIF", RE::NiMatrix3(), intersection, 0.75f, 7, 0);
-
-						PlayWaterImpact(21.f, intersection);  // medium impact
-						lastSplashUpdate = lastUpdate;
-					}
-				}
-			}
-		}
-	}
-
-	if (lifetime) {
-		if (*lifetime < 0.f) {
-			return false;
-		}
-		*lifetime -= a_deltaTime;
-	}
-
-	return true;
+    if (lastUpdate == *g_durationOfApplicationRunTimeMS) { return true; }
+    lastUpdate = *g_durationOfApplicationRunTimeMS;
+    auto actor = actorHandle.get();
+    if (!actor || actor->IsDead() || !actor->AsActorState()->IsWeaponDrawn() || actor->Get3D() != visualRoot.get() ||
+        actor->GetParentCell() != visualCell || !attackCollisionNode || !attackCollisionNode->parent) { return false; }
+    if (actor->IsPlayerRef()) { a_deltaTime *= Utils::GetPlayerTimeMultiplier(); }
+    if (lifetime) {
+        if (*lifetime <= 0.f) { return false; }
+        *lifetime -= a_deltaTime;
+    }
+    return true;
 }
 
 bool AttackCollision::CreateCollision(RE::bhkWorld* a_world, RE::Actor* a_actor, RE::NiNode* a_parentNode, RE::NiNode* a_newNode, RE::hkVector4& a_vertexA, RE::hkVector4& a_vertexB, float a_radius, CollisionLayer a_collisionLayer)
 {
-	RE::BSWriteLockGuard lock(a_world->worldLock);
-
-	RE::bhkCapsuleShape* weaponShape = reinterpret_cast<RE::bhkCapsuleShape*>(RE::MemoryManager::GetSingleton()->Allocate(sizeof(RE::bhkCapsuleShape), 0, false));
-	if (!weaponShape) {
-		return false;
-	}
-
-	bhkCapsuleShape_ctor(weaponShape);
-	bhkCapsuleShape_SetSize(weaponShape, a_vertexA, a_vertexB, a_radius);
-
-	auto capsuleShape = static_cast<RE::hkpCapsuleShape*>(weaponShape->referencedObject.get());
-
-	RE::bhkRigidBodyCinfo cInfo;
-	bhkRigidBodyCinfo_ctor(&cInfo);
-
-	uint32_t collisionFilterInfo = 0;
-
-	if (!Utils::GetActorCollisionFilterInfo(a_actor, collisionFilterInfo)) {
-		a_actor->GetCollisionFilterInfo(collisionFilterInfo);
-	}
-
-	uint16_t collisionGroup = collisionFilterInfo >> 16;
-
-	cInfo.collisionFilterInfo = (uint32_t)collisionGroup << 16 | static_cast<uint32_t>(a_collisionLayer);
-	cInfo.hkCinfo.collisionFilterInfo = (uint32_t)collisionGroup << 16 | static_cast<uint32_t>(a_collisionLayer);
-	cInfo.shape = capsuleShape;
-	cInfo.hkCinfo.shape = capsuleShape;
-	cInfo.hkCinfo.motionType = RE::hkpMotion::MotionType::kKeyframed;
-	cInfo.hkCinfo.enableDeactivation = false;
-	cInfo.hkCinfo.solverDeactivation = RE::hkpRigidBodyCinfo::SolverDeactivation::kOff;
-	cInfo.hkCinfo.qualityType = RE::hkpCollidableQualityType::kKeyframedReporting;
-
-	// set transform
-	RE::hkTransform transform = Utils::GetHkTransformOfNode(a_parentNode);
-	cInfo.hkCinfo.position = transform.translation;
-	cInfo.hkCinfo.rotation = Utils::SetFromRotation(transform.rotation);
-
-	RE::bhkRigidBody* rigidBody = reinterpret_cast<RE::bhkRigidBody*>(RE::MemoryManager::GetSingleton()->Allocate(sizeof(RE::bhkRigidBody), 0, false));
-	if (!rigidBody) {
-		return false;
-	}
-	std::memset(rigidBody, 0, sizeof(RE::bhkRigidBody));
-
-	bhkRigidBody_ctor(rigidBody);
-	bhkRigidBody_ApplyCinfo(rigidBody, &cInfo);
-
-	RE::hkpRigidBody* hkpRb = static_cast<RE::hkpRigidBody*>(rigidBody->referencedObject.get());
-	hkpRb->collidable.broadPhaseHandle.objectQualityType = static_cast<int8_t>(RE::hkpCollidableQualityType::kKeyframedReporting);
-
-	RE::bhkCollisionObject* bhkCollisionObject = reinterpret_cast<RE::bhkCollisionObject*>(RE::MemoryManager::GetSingleton()->Allocate(sizeof(RE::bhkCollisionObject), 0, false));
-	if (!bhkCollisionObject) {
-		return false;
-	}
-	std::memset(bhkCollisionObject, 0, sizeof(RE::bhkCollisionObject));
-	bhkNiCollisionObject_NiNode_ctor(bhkCollisionObject, a_newNode);
-	reinterpret_cast<std::uintptr_t*>(bhkCollisionObject)[0] = RE::VTABLE_bhkCollisionObject[0].address();
-
-	bhkNiCollisionObject_setWorldObject(bhkCollisionObject, rigidBody);
-
-	bhkRigidBody_setActivated(rigidBody, true);
-	hkpWorld_AddEntity(static_cast<RE::ahkpWorld*>(a_world->referencedObject.get()), static_cast<RE::hkpRigidBody*>(rigidBody->referencedObject.get()), RE::hkpEntityActivation::kDoActivate);
-
-	return true;
+    return false; // Hard-disabled: this build never creates Precision physics entities.
 }
 
 bool AttackCollision::RemoveCollision(RE::NiPointer<RE::NiNode>& a_node)
 {
-	auto actor = actorHandle.get().get();
-	if (!actor) {
-		return false;
-	}
-
-	auto cell = actor->GetParentCell();
-	if (!cell) {
-		return false;
-	}
-
-	auto world = cell->GetbhkWorld();
-	if (!world) {
-		return false;
-	}
-
-	RE::BSWriteLockGuard lock(world->worldLock);
-
-	bool bRemoved = false;
-
-	if (a_node) {
-		if (a_node->collisionObject) {
-			auto niCollisionObject = a_node->collisionObject;
-			if (niCollisionObject) {
-				auto collisionObject = RE::NiPointer<RE::bhkCollisionObject>(static_cast<RE::bhkCollisionObject*>(niCollisionObject.get()));
-				if (auto rb = collisionObject->GetRigidBody()) {
-					auto rigidBody = RE::NiPointer<RE::bhkRigidBody>(rb);
-					if (rigidBody->referencedObject) {
-						auto hkpRigidBody = RE::hkRefPtr<RE::hkpRigidBody>(static_cast<RE::hkpRigidBody*>(rigidBody->referencedObject.get()));
-						if (hkpRigidBody->world) {
-							hkpWorld_RemoveEntity(static_cast<RE::ahkpWorld*>(world->referencedObject.get()), &bRemoved, hkpRigidBody.get());
-						}
-					}
-				}
-			}
-		}
-
-		auto parentNode = RE::NiPointer<RE::NiNode>(a_node->parent);
-
-		if (parentNode) {
-			parentNode->DetachChild(a_node.get());
-		}
-
-		return true;
-	}
-
-	return false;
+    if (!a_node) { return false; }
+    if (auto parent = a_node->parent) { parent->DetachChild(a_node.get()); }
+    return true;
 }
 
 void AttackCollisions::Update(float a_deltaTime)

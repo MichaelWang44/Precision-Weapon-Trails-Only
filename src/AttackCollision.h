@@ -21,6 +21,9 @@ struct AttackCollision
 	RE::NiPointer<RE::NiNode> attackCollisionNode;
 	RE::NiPointer<RE::NiNode> recoilCollisionNode;
 	float capsuleLength = 0.f;
+    float trailFallbackLength = 0.f;
+    RE::NiPointer<RE::NiAVObject> visualRoot;
+    RE::TESObjectCELL* visualCell = nullptr;
 	float visualWeaponLength = 0.f;
 
 	bool Add(const CollisionDefinition& a_collisionDefinition);

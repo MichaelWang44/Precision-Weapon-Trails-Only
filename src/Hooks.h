@@ -3,48 +3,17 @@
 #include "PrecisionAPI.h"
 #include "PrecisionHandler.h"
 
-namespace RE
-{
-	struct RE::BSAnimationUpdateData
-	{
-		float deltaTime;                            // 00
-		uint32_t pad04;                             // 04
-		void* unkFunctionPtr;                       // 08
-		TESObjectREFR* refr;                        // 10
-		NiPoint3* worldCameraPositionPtr;           // 18
-		IPostAnimationChannelUpdateFunctor* unk20;  // 20
-		uint16_t flags;                             // 28
-		bool unk2A;                                 // 2A
-		bool unk2B;                                 // 2B
-		bool unk2C;                                 // 2C
-		bool unk2D;                                 // 2D
-		bool unk2E;                                 // 2E
-		bool unk2F;                                 // 2F
-	};
-	static_assert(sizeof(BSAnimationUpdateData) == 0x30);
-}
-
 namespace Hooks
 {
+    bool ValidateVisualHooks();
 	class UpdateHooks
 	{
 	public:
 		static void Hook()
 		{
-			REL::Relocation<uintptr_t> hook1{ RELOCATION_ID(35565, 36564) };  // 5B2FF0, 5D9F50, main update
-			REL::Relocation<uintptr_t> hook2{ RELOCATION_ID(40436, 41453) };  // 6E1990, 70A840, RunOneActorAnimationUpdateJob
-			REL::Relocation<uintptr_t> hook3{ RELOCATION_ID(36359, 37350) };  // 5D8170, 5FCF20, UpdateMovementJob internal function
-
-			auto& trampoline = SKSE::GetTrampoline();
-			_Nullsub = trampoline.write_call<5>(hook1.address() + RELOCATION_OFFSET(0x748, 0xC26), Nullsub);            // 5B3738, 5DAB76
-			_ApplyMovement = trampoline.write_call<5>(hook3.address() + RELOCATION_OFFSET(0xF0, 0xFB), ApplyMovement);  // 5D8260, 5FD01B
-
-			REL::Relocation<std::uintptr_t> CharacterVtbl{ RE::VTABLE_Character[0] };
-			_Character_ModifyAnimationUpdateData = CharacterVtbl.write_vfunc(0x79, Character_ModifyAnimationUpdateData);
-
-			REL::Relocation<std::uintptr_t> PlayerCharacterVtbl{ RE::VTABLE_PlayerCharacter[0] };
-			_PlayerCharacter_ModifyAnimationUpdateData = PlayerCharacterVtbl.write_vfunc(0x79, PlayerCharacter_ModifyAnimationUpdateData);
-		}
+            REL::Relocation<uintptr_t> update{ RELOCATION_ID(35565, 36564) };
+            _Nullsub = SKSE::GetTrampoline().write_call<5>(update.address() + RELOCATION_OFFSET(0x748, 0xC26), Nullsub);
+}
 
 	private:
 		static void Nullsub();
@@ -222,64 +191,10 @@ namespace Hooks
 	public:
 		static void Hook()
 		{
-			REL::Relocation<std::uintptr_t> HighActorCullerVtbl{ RE::VTABLE_HighActorCuller[0] };
-			_CullActors = HighActorCullerVtbl.write_vfunc(0x1, CullActors);
-
-			REL::Relocation<std::uintptr_t> ActorVtbl{ RE::VTABLE_Actor[0] };
-			//_Actor_DetachHavok = ActorVtbl.write_vfunc(0x65, Actor_DetachHavok);
-			//_Actor_InitHavok = ActorVtbl.write_vfunc(0x66, Actor_InitHavok);
-
-			REL::Relocation<std::uintptr_t> CharacterVtbl{ RE::VTABLE_Character[0] };
-			//_Character_DetachHavok = CharacterVtbl.write_vfunc(0x65, Character_DetachHavok);
-			//_Character_InitHavok = CharacterVtbl.write_vfunc(0x66, Character_InitHavok);
-
-			REL::Relocation<std::uintptr_t> PlayerCharacterVtbl{ RE::VTABLE_PlayerCharacter[0] };
-			//_PlayerCharacter_DetachHavok = PlayerCharacterVtbl.write_vfunc(0x65, PlayerCharacter_DetachHavok);
-			//_PlayerCharacter_InitHavok = PlayerCharacterVtbl.write_vfunc(0x66, PlayerCharacter_InitHavok);
-
-			REL::Relocation<std::uintptr_t> ChairFurnitureExitHandlerVtbl{ RE::VTABLE_ChairFurnitureExitHandler[0] };
-
-			REL::Relocation<std::uintptr_t> BShkbAnimationGraphVtbl{ RE::VTABLE_BShkbAnimationGraph[0] };
-			_SetWorld = BShkbAnimationGraphVtbl.write_vfunc(0x4, SetWorld);
-
-			REL::Relocation<uintptr_t> hook1{ RELOCATION_ID(38112, 39068) };  // 6403D0, 666990, Job_Ragdoll_post_physics
-			REL::Relocation<uintptr_t> hook2{ RELOCATION_ID(62416, 63358) };  // AE1F60, B06870, BSAnimationGraphManager::sub_140AE1F60
-			REL::Relocation<uintptr_t> hook3{ RELOCATION_ID(62621, 63562) };  // AEB8F0, B10A30, BShkbAnimationGraph::sub_140AEB8F0
-			REL::Relocation<uintptr_t> hook4{ RELOCATION_ID(62622, 63563) };  // AEBBF0, B10D30, BShkbAnimationGraph::sub_140AEBBF0
-			REL::Relocation<uintptr_t> hook5{ RELOCATION_ID(62642, 63587) };  // AEF630, B14F90, BShkbAnimationGraph::sub_140AEF630
-
-			REL::Relocation<uintptr_t> hook6{ RELOCATION_ID(41805, 42886) };  // 723070, 74E1E0, EnableCharacterBumperHandler::Handle
-
-			REL::Relocation<uintptr_t> collisionFilterHook1{ RELOCATION_ID(76181, 78009) };  // DAF370, DEF410, hkpRigidBody
-			REL::Relocation<uintptr_t> collisionFilterHook2{ RELOCATION_ID(76676, 78548) };  // DD6780, E17640, hkpCollidableCollidableFilter_isCollisionEnabled
-			REL::Relocation<uintptr_t> collisionFilterHook3{ RELOCATION_ID(76677, 78549) };  // DD67B0, E17670, hkpShapeCollectionFilter_numShapeKeyHitsLimitBreached
-			REL::Relocation<uintptr_t> collisionFilterHook4{ RELOCATION_ID(76678, 78550) };  // DD68A0, E17760, hkpRayShapeCollectionFilter_isCollisionEnabled
-			REL::Relocation<uintptr_t> collisionFilterHook5{ RELOCATION_ID(76679, 78551) };  // DD6900, E177C0, hkpRayCollidableFilter_isCollisionEnabled
-			REL::Relocation<uintptr_t> collisionFilterHook6{ RELOCATION_ID(76680, 78552) };  // DD6930, E177F0, hkpShapeCollectionFilter_isCollisionEnabled
-			REL::Relocation<uintptr_t> collisionFilterHook7{ RELOCATION_ID(77228, 79115) };  // DEE700, E30D60, hkpCachingShapePhantom
-
-			auto& trampoline = SKSE::GetTrampoline();
-			_ProcessHavokHitJobs = trampoline.write_call<5>(hook1.address() + RELOCATION_OFFSET(0x104, 0xFC), ProcessHavokHitJobs);  // 6404D4, 666A8C
-			//_BShkbAnimationGraph_UpdateAnimation = trampoline.write_call<5>(hook2.address() + RELOCATION_OFFSET(0xF5, 0x185), BShkbAnimationGraph_UpdateAnimation);  // AE2055, B069F5
-
-			_hkbRagdollDriver_DriveToPose = trampoline.write_call<5>(hook3.address() + RELOCATION_OFFSET(0x25B, 0x256), hkbRagdollDriver_DriveToPose);  // AEBB4B, B10C86
-			_hkbRagdollDriver_PostPhysics = trampoline.write_call<5>(hook4.address() + RELOCATION_OFFSET(0x18C, 0x18B), hkbRagdollDriver_PostPhysics);  // AEBD7C, B10EBB
-
-			//_BShkbAnimationGraph_ShouldAddToGraphListeners = trampoline.write_call<5>(hook5.address() + RELOCATION_OFFSET(0x37F, 0x38D), BShkbAnimationGraph_ShouldAddToGraphListeners);  // AEF9AF, B1531D
-
-			_QueueTask_ToggleCharacterBumper = trampoline.write_call<5>(hook6.address() + RELOCATION_OFFSET(0x1F, 0x1F), QueueTask_ToggleCharacterBumper);
-			_ToggleCharacterBumper = trampoline.write_call<5>(hook6.address() + RELOCATION_OFFSET(0x56, 0x56), ToggleCharacterBumper);
-
-			_bhkCollisionFilter_CompareFilterInfo1 = trampoline.write_call<5>(collisionFilterHook1.address() + RELOCATION_OFFSET(0x16F, 0x16F), bhkCollisionFilter_CompareFilterInfo1);  // DAF4DF, DEF57F
-			_bhkCollisionFilter_CompareFilterInfo2 = trampoline.write_call<5>(collisionFilterHook2.address() + RELOCATION_OFFSET(0x17, 0x17), bhkCollisionFilter_CompareFilterInfo2);    // DD6797, E17657
-			_bhkCollisionFilter_CompareFilterInfo3 = trampoline.write_call<5>(collisionFilterHook3.address() + RELOCATION_OFFSET(0xBC, 0xBC), bhkCollisionFilter_CompareFilterInfo3);    // DD686C, E1772C
-			_bhkCollisionFilter_CompareFilterInfo4 = trampoline.write_call<5>(collisionFilterHook4.address() + RELOCATION_OFFSET(0x31, 0x31), bhkCollisionFilter_CompareFilterInfo4);    // DD68D1, E17791
-			_bhkCollisionFilter_CompareFilterInfo5 = trampoline.write_call<5>(collisionFilterHook5.address() + RELOCATION_OFFSET(0x17, 0x17), bhkCollisionFilter_CompareFilterInfo5);    // DD6917, E177D7
-			_bhkCollisionFilter_CompareFilterInfo6 = trampoline.write_call<5>(collisionFilterHook6.address() + RELOCATION_OFFSET(0x118, 0x118), bhkCollisionFilter_CompareFilterInfo6);  // DD6A48, E17908
-			_bhkCollisionFilter_CompareFilterInfo7 = trampoline.write_call<5>(collisionFilterHook7.address() + RELOCATION_OFFSET(0x128, 0x128), bhkCollisionFilter_CompareFilterInfo7);  // DEE828, E30E88
-
-			HookPrePhysicsStep();
-		}
+            // Preserve the engine call; only discover/register visual actors afterward.
+            REL::Relocation<uintptr_t> update{ RELOCATION_ID(38112, 39068) };
+            _ProcessHavokHitJobs = SKSE::GetTrampoline().write_call<5>(update.address() + RELOCATION_OFFSET(0x104, 0xFC), ProcessHavokHitJobs);
+}
 
 	private:
 		using CollisionFilterComparisonResult = PRECISION_API::CollisionFilterComparisonResult;

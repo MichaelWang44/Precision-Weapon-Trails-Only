@@ -21,7 +21,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* a_msg)
 		break;
 	case SKSE::MessagingInterface::kPreLoadGame:
 		PrecisionHandler::GetSingleton()->OnPreLoadGame();
-		DrawHandler::GetSingleton()->OnPreLoadGame();
+
 		break;
 	case SKSE::MessagingInterface::kPostLoadGame:
 	case SKSE::MessagingInterface::kNewGame:
@@ -90,8 +90,8 @@ extern "C" DLLEXPORT constinit auto SKSEPlugin_Version = []() {
 	v.PluginName(Plugin::NAME);
 	v.AuthorName("Ersh");
 	v.UsesAddressLibrary(true);
-	v.CompatibleVersions({ SKSE::RUNTIME_SSE_LATEST });
-	v.HasNoStructUse(true);
+	v.CompatibleVersions({ REL::Version{1, 6, 1170, 0} });
+	v.UsesStructsPost629();
 
 	return v;
 }();
@@ -103,11 +103,16 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 		Sleep(100);
 	}
 #endif
-	REL::Module::reset();  // Clib-NG bug workaround
 
 	InitializeLog();
 	logger::info("{} v{}"sv, Plugin::NAME, Plugin::VERSION.string());
 
+
+    if (a_skse->RuntimeVersion() != REL::Version{1, 6, 1170, 0}) {
+        logger::critical("TrailsOnly requires Skyrim 1.6.1170");
+        return false;
+    }
+    logger::info("Precision 2.0.4 - Weapon Trails Only (source e094209; no combat/physics hooks)");
 	SKSE::Init(a_skse);
 	SKSE::AllocTrampoline(1 << 10);
 
@@ -116,6 +121,7 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 		return false;
 	}
 
+    if (!Hooks::ValidateVisualHooks()) { return false; }
 	Hooks::Install();
 	Papyrus::Register();
 
@@ -130,7 +136,7 @@ extern "C" DLLEXPORT void* SKSEAPI RequestPluginAPI(const PRECISION_API::Interfa
 	GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)retAddr, &hModule);
 
 	if (hModule) {
-		SKSE::PluginVersionData* versionData = (SKSE::PluginVersionData*)SKSE::WinAPI::GetProcAddress(hModule, "SKSEPlugin_Version");
+		SKSE::PluginVersionData* versionData = (SKSE::PluginVersionData*)GetProcAddress(hModule, "SKSEPlugin_Version");
 		if (versionData && versionData->pluginName == "Accuracy"sv && versionData->pluginVersion < 0x20000) {
 			return nullptr;
 		}

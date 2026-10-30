@@ -8,15 +8,7 @@
 
 void PrecisionHandler::AddPlayerSink()
 {
-	auto playerCharacter = RE::PlayerCharacter::GetSingleton();
-	RE::BSAnimationGraphManagerPtr graphManager;
-	playerCharacter->GetAnimationGraphManager(graphManager);
-	if (graphManager) {
-		for (const auto& animationGraph : graphManager->graphs) {
-			animationGraph->GetEventSource<RE::BSAnimationGraphEvent>()->AddEventSink(PrecisionHandler::GetSingleton());
-		}
-	}
-	playerCharacter->NotifyAnimationGraph("Collision_WeightResetEnd"sv);
+    GetSingleton()->refreshVisualActorsRequested = true;
 }
 
 void PrecisionHandler::RemovePlayerSink()
@@ -34,7 +26,7 @@ void PrecisionHandler::RemovePlayerSink()
 bool PrecisionHandler::AddActorSink(RE::Actor* a_actor)
 {
 	bool ret = a_actor->AddAnimationGraphEventSink(PrecisionHandler::GetSingleton());
-	a_actor->NotifyAnimationGraph("Collision_WeightResetEnd"sv);
+
 	return ret;
 }
 
@@ -65,7 +57,34 @@ constexpr uint32_t operator"" _h(const char* str, size_t size) noexcept
 
 PrecisionHandler::EventResult PrecisionHandler::ProcessEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>* a_eventSource)
 {
-	if (!a_event || !a_event->holder || !Settings::bAttackCollisionsEnabled || Settings::bDisableMod) {
+    // Animation event sources hold their own lock while dispatching. Copy the event
+    // without touching scene nodes or acquiring actor-state locks on that thread.
+    if (a_event && a_event->holder) {
+        switch (hash(a_event->tag.data(), a_event->tag.size())) {
+        case "Collision_AttackStart"_h: case "Collision_Start"_h:
+        case "Collision_Add"_h: case "Collision_Remove"_h:
+        case "Collision_ClearTargets"_h: case "Collision_AttackEnd"_h:
+        case "Collision_Cancel"_h: case "weaponSwing"_h: case "weaponLeftSwing"_h:
+        case "preHitFrame"_h: case "CastOKStart"_h: case "CastOKStop"_h:
+        case "SoundPlay"_h: case "SoundPlay.WPNSwingUnarmed"_h:
+        case "SoundPlay.NPCHumanCombatShieldBash"_h: case "SoundPlay.NPCHumanCombatShieldBashPower"_h:
+        case "hitFrame"_h: case "attackStop"_h: case "staggerStart"_h:
+        case "Unequip"_h: case "weaponSheathe"_h:
+            break;
+        default: return EventResult::kContinue;
+        }
+        auto actor = const_cast<RE::TESObjectREFR*>(a_event->holder)->As<RE::Actor>();
+        if (actor) {
+            std::lock_guard locker(visualEventsLock);
+            visualEvents.push_back({actor->GetHandle(), a_event->tag, a_event->payload, a_eventSource});
+        }
+    }
+    return EventResult::kContinue;
+}
+
+PrecisionHandler::EventResult PrecisionHandler::ProcessVisualEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>* a_eventSource)
+{
+	if (!a_event || !a_event->holder || !Settings::bDisplayTrails || Settings::bDisableMod) {
 		return EventResult::kContinue;
 	}
 
@@ -79,6 +98,7 @@ PrecisionHandler::EventResult PrecisionHandler::ProcessEvent(const RE::BSAnimati
 
 	uint32_t activeGraphIdx = graphManager->GetRuntimeData().activeGraph;
 
+	if (activeGraphIdx >= graphManager->graphs.size()) { return EventResult::kContinue; }
 	if (graphManager->graphs[activeGraphIdx] && graphManager->graphs[activeGraphIdx].get() != a_eventSource) {
 		return EventResult::kContinue;
 	}
@@ -193,6 +213,8 @@ PrecisionHandler::EventResult PrecisionHandler::ProcessEvent(const RE::BSAnimati
 	case "Collision_AttackEnd"_h:
 	case "attackStop"_h:
 	case "staggerStart"_h:
+	case "Unequip"_h:
+	case "weaponSheathe"_h:
 	case "Collision_Cancel"_h:
 		{
 			//ClearHitRefs(actor->GetHandle());
@@ -205,126 +227,102 @@ PrecisionHandler::EventResult PrecisionHandler::ProcessEvent(const RE::BSAnimati
 	return EventResult::kContinue;
 }
 
+
+void PrecisionHandler::RefreshVisualActors()
+{
+    auto player = RE::PlayerCharacter::GetSingleton();
+    auto processes = RE::ProcessLists::GetSingleton();
+    if (!player || !processes) { return; }
+    std::unordered_set<RE::ActorHandle> seen;
+    const float maxDistanceSq = Settings::fActiveActorDistance * Settings::fActiveActorDistance;
+    auto visit = [&](RE::ActorHandle handle) {
+        auto actor = handle.get();
+        if (!actor || actor->IsDead() || Settings::bDisableMod || !Settings::bDisplayTrails || IsActorDisabled(handle)) { return; }
+        auto root = actor->Get3D();
+        if (!root || !actor->GetParentCell()) { return; }
+        if (!actor->IsPlayerRef() && actor->GetPosition().GetSquaredDistance(player->GetPosition()) > maxDistanceSq) { return; }
+        RE::BSAnimationGraphManagerPtr manager;
+        if (!actor->GetAnimationGraphManager(manager) || !manager || manager->graphs.empty()) { return; }
+        std::vector<RE::BSTSmartPointer<RE::BShkbAnimationGraph>> graphs;
+        for (auto& graph : manager->graphs) { if (graph) { graphs.push_back(graph); } }
+        if (graphs.empty()) { return; }
+        seen.insert(handle);
+        auto state = GetActiveActor(handle);
+        bool sameGraphs = state && state->visualGraphs.size() == graphs.size();
+        if (sameGraphs) {
+            for (size_t i = 0; i < graphs.size(); ++i) {
+                if (state->visualGraphs[i].get() != graphs[i].get()) { sameGraphs = false; break; }
+            }
+        }
+        if (state && state->root.get() == root && state->visualCell == actor->GetParentCell() &&
+            state->actorScale == actor->GetScale() && sameGraphs) { return; }
+        {
+            WriteLocker locker(activeActorsLock);
+            activeActors.erase(handle);
+        }
+        state.reset(); // Remove old sinks before registering a replacement on the same graph.
+        state = std::make_shared<ActiveActor>(handle, root);
+        state->visualGraphs = std::move(graphs);
+        {
+            WriteLocker locker(activeActorsLock);
+            activeActors.emplace(handle, state);
+        }
+        for (auto& graph : state->visualGraphs) {
+            graph->GetEventSource<RE::BSAnimationGraphEvent>()->AddEventSink(this);
+        }
+        logger::debug("TrailsOnly registered actor {:08X}", actor->GetFormID());
+    };
+    visit(player->GetHandle());
+    for (auto handle : processes->highActorHandles) { visit(handle); }
+    {
+        WriteLocker locker(activeActorsLock);
+        for (auto it = activeActors.begin(); it != activeActors.end();) {
+            if (!seen.contains(it->first)) { it = activeActors.erase(it); }
+            else { ++it; }
+        }
+    }
+}
+
 void PrecisionHandler::Update(float a_deltaTime)
 {
-	/*if (!Settings::bAttackCollisionsEnabled || Settings::bDisableMod) {
-		Clear();
-	}*/
-
-	if (RE::UI::GetSingleton()->GameIsPaused()) {
-		return;
-	}
-
-	Settings::UpdateGlobals();
-
-	ProcessMainUpdateJobs();
-	ProcessDelayedJobs(a_deltaTime);
-
-	// Update active actors
-	{
-		ReadLocker locker(activeActorsLock);
-		for (auto& [handle, activeActor] : activeActors) {
-			activeActor->Update(a_deltaTime);
-		}
-	}
-
-	// do pending hits
-	{
-		ReadLocker locker(pendingHitsLock);
-		for (auto& pendingHit : pendingHits) {
-			pendingHit.Run();
-		}
-	}
-
-	{
-		WriteLocker locker(pendingHitsLock);
-		pendingHits.clear();
-	}
-
-	// update trails
-	for (auto it = _attackTrails.begin(); it != _attackTrails.end();) {
-		if (!it->get()->Update(a_deltaTime)) {
-			it = _attackTrails.erase(it);
-		} else {
-			++it;
-		}
-	}
-
-	if (bCameraShakeActive) {
-		if (currentCameraShakeTimer > 0.f) {
-			currentCameraShake = sinf((currentCameraShakeLength - currentCameraShakeTimer) * currentCameraShakeFrequency) * currentCameraShakeStrength * fmax(currentCameraShakeLength - (currentCameraShakeLength - currentCameraShakeTimer), 0.f);
-			currentCameraShakeTimer -= a_deltaTime;
-		} else {
-			bCameraShakeActive = false;
-			currentCameraShake = 0.f;
-			currentCameraShakeTimer = 0.f;
-			currentCameraShakeStrength = 0.f;
-			currentCameraShakeLength = 0.f;
-			currentCameraShakeFrequency = 0.f;
-		}
-	}
+    if (RE::UI::GetSingleton()->GameIsPaused()) { return; }
+    if (refreshVisualActorsRequested.exchange(false)) { RefreshVisualActors(); }
+    std::vector<VisualEvent> events;
+    { std::lock_guard locker(visualEventsLock); events.swap(visualEvents); }
+    for (auto& queued : events) {
+        auto actor = queued.actor.get();
+        if (actor && GetActiveActor(queued.actor)) {
+            RE::BSAnimationGraphEvent event{queued.tag, actor.get(), queued.payload};
+            ProcessVisualEvent(&event, queued.source);
+        }
+    }
+    ProcessDelayedJobs(a_deltaTime);
+    {
+        ReadLocker locker(activeActorsLock);
+        for (auto& [handle, activeActor] : activeActors) {
+            auto actor = handle.get();
+            if (!actor || actor->IsDead() || !actor->AsActorState()->IsWeaponDrawn() || Settings::bDisableMod || !Settings::bDisplayTrails) {
+                ++activeActor->visualGeneration;
+                activeActor->attackCollisions.RemoveAllAttackCollisions();
+            } else {
+                activeActor->Update(a_deltaTime);
+            }
+        }
+    }
+    for (auto it = _attackTrails.begin(); it != _attackTrails.end();) {
+        if (!(*it)->Update(a_deltaTime)) { it = _attackTrails.erase(it); }
+        else { ++it; }
+    }
 }
 
 void PrecisionHandler::ApplyHitImpulse(RE::ObjectRefHandle a_refHandle, RE::hkpRigidBody* a_rigidBody, const RE::NiPoint3& a_hitVelocity, const RE::hkVector4& a_hitPosition, float a_impulseMult, bool a_bIsActiveRagdoll, bool a_bAttackerIsPlayer, bool a_bIsDeferred /*= false */)
 {
-	if (!a_refHandle) {
-		return;
-	}
-
-	auto refr = a_refHandle.get();
-
-	if (!a_bIsDeferred) {
-		if (auto actor = refr->As<RE::Actor>()) {
-			auto actorHandle = actor->GetHandle();
-			if (!PrecisionHandler::IsRagdollAdded(actorHandle)) {
-				// Don't add ragdoll to the player if in first person
-				if (actor->IsPlayerRef() && Utils::IsFirstPerson()) {
-					return;
-				}
-
-				{
-					WriteLocker locker(ragdollsToAddLock);
-					ragdollsToAdd.emplace(actorHandle);
-				}
-
-				QueuePostHavokHitJob<DeferredImpulseJob>(a_refHandle, a_rigidBody, a_hitVelocity, a_hitPosition, a_impulseMult, a_bIsActiveRagdoll, a_bAttackerIsPlayer);
-
-				return;
-			}
-		}
-	}
-
-	// Apply linear impulse at the center of mass to all bodies within 3 ragdoll constraints
-	Utils::ForEachRagdollDriver(refr.get(), [=](RE::hkbRagdollDriver* driver) {
-		auto ragdoll = GetActiveRagdollFromDriver(driver);
-		if (!ragdoll) {
-			return;
-		}
-
-		ragdoll->impulseTime = Settings::fRagdollImpulseTime;
-
-		Utils::ForEachAdjacentBody(driver, a_rigidBody, [=](RE::hkpRigidBody* adjacentBody) {
-			QueuePrePhysicsJob<LinearImpulseJob>(adjacentBody, a_refHandle, a_hitVelocity, a_impulseMult * Settings::fHitImpulseDecayMult1, a_bIsActiveRagdoll, a_bAttackerIsPlayer);
-			Utils::ForEachAdjacentBody(driver, adjacentBody, [=](RE::hkpRigidBody* adjacentBody) {
-				QueuePrePhysicsJob<LinearImpulseJob>(adjacentBody, a_refHandle, a_hitVelocity, a_impulseMult * Settings::fHitImpulseDecayMult2, a_bIsActiveRagdoll, a_bAttackerIsPlayer);
-				Utils::ForEachAdjacentBody(driver, adjacentBody, [=](RE::hkpRigidBody* adjacentBody) {
-					QueuePrePhysicsJob<LinearImpulseJob>(adjacentBody, a_refHandle, a_hitVelocity, a_impulseMult * Settings::fHitImpulseDecayMult3, a_bIsActiveRagdoll, a_bAttackerIsPlayer);
-				});
-			});
-		});
-	});
-
-	// Apply a point impulse at the hit location to the body we actually hit
-	QueuePrePhysicsJob<PointImpulseJob>(a_rigidBody, a_refHandle, a_hitVelocity, a_hitPosition, a_impulseMult, a_bIsActiveRagdoll, a_bAttackerIsPlayer);
+    // Disabled in the trails-only build, including external API calls.
 }
 
 void PrecisionHandler::AddHitstop(RE::ActorHandle a_actorHandle, float a_hitstopLength, bool a_bReceived)
 {
-	if (Settings::bEnableHitstop) {
-		if (auto activeActor = GetActiveActor(a_actorHandle)) {
-			activeActor->AddHitstop(a_hitstopLength, a_bReceived);
-		}
-	}
+    // Disabled in the trails-only build.
 }
 
 void PrecisionHandler::UpdateHitstop(RE::ActorHandle a_actorHandle, float a_deltaTime)
@@ -360,24 +358,7 @@ float PrecisionHandler::GetDriveToPoseHitstopMultiplier(RE::ActorHandle a_actorH
 
 void PrecisionHandler::ApplyCameraShake(float a_strength, float a_length, float a_frequency, float a_distanceSquared)
 {
-	// do a inverse-square falloff for shake strength
-	if (a_distanceSquared > 0.f) {
-		float strengthMult = 1.f;
-		if (a_distanceSquared < Settings::cameraShakeRadiusSquared) {
-			strengthMult = 1 - (a_distanceSquared / Settings::cameraShakeRadiusSquared);
-		}
-		a_strength *= strengthMult;
-	}
-
-	if (a_strength > 0.f) {
-		if (currentCameraShakeStrength / a_strength < 0.8f) {
-			bCameraShakeActive = true;
-			currentCameraShakeStrength = a_strength;
-			currentCameraShakeLength = a_length;
-			currentCameraShakeFrequency = a_frequency;
-			currentCameraShakeTimer = a_length;
-		}
-	}
+    // Disabled in the trails-only build.
 }
 
 bool PrecisionHandler::CalculateHitImpulse(RE::hkpRigidBody* a_rigidBody, const RE::NiPoint3& a_hitVelocity, float a_impulseMult, bool a_bIsActiveRagdoll, bool a_bAttackerIsPlayer, RE::NiPoint3& a_outImpulse)
@@ -512,6 +493,7 @@ bool PrecisionHandler::RemoveAttackCollision(RE::ActorHandle a_actorHandle, cons
 bool PrecisionHandler::RemoveAllAttackCollisions(RE::ActorHandle a_actorHandle)
 {
 	if (auto activeActor = GetActiveActor(a_actorHandle)) {
+		++activeActor->visualGeneration;
 		return activeActor->attackCollisions.RemoveAllAttackCollisions();
 	}
 
@@ -724,6 +706,10 @@ void PrecisionHandler::Initialize()
 
 void PrecisionHandler::Clear()
 {
+    { std::lock_guard locker(visualEventsLock); visualEvents.clear(); }
+    refreshVisualActorsRequested = true;
+    { WriteLocker locker(delayedJobsLock); _delayedJobs.clear(); }
+
 	{
 		WriteLocker locker(activeCollisionGroupsLock);
 		activeCollisionGroups.clear();
@@ -846,7 +832,7 @@ bool PrecisionHandler::GetAttackCollisionDefinition(RE::Actor* a_actor, AttackDe
 
 	// try finding a matching animation definition first
 	RE::BSFixedString projectName;
-	RE::hkStringPtr animName;
+	RE::hkStringPtr animName("");
 	float animTime;
 
 	if (Utils::GetActiveAnim(a_actor, projectName, animName, animTime)) {
@@ -921,7 +907,8 @@ bool PrecisionHandler::GetAttackCollisionDefinition(RE::Actor* a_actor, AttackDe
 
 	auto& attackDefinitions = search->second;
 
-	auto& attackData = Actor_GetAttackData(a_actor);
+	// Read-only visual lookup: never reassign the actor-owned attack data.
+	auto attackData = Actor_GetAttackData(a_actor);
 
 	if (a_bIsLeftSwing.has_value()) {
 		if (attackData && attackData->IsLeftAttack() != a_bIsLeftSwing) {
@@ -963,7 +950,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 	auto parameters = Utils::Tokenize(payload.c_str(), '|');
 
 	if (parameters.empty()) {
-		logger::error("Invalid collision event: {}", a_event->tag);
+		logger::error("Invalid collision event: {}", a_event->tag.data());
 		return false;
 	}
 
@@ -1056,7 +1043,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseStringParameter(parameter, parsedString)) {
 					a_outCollisionDefinition.nodeName = parsedString;
 				} else {
-					logger::error("Invalid {} event payload - node name could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - node name could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1067,7 +1054,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseIntParameter(parameter, parsedInt)) {
 					a_outCollisionDefinition.ID = parsedInt;
 				} else {
-					logger::error("Invalid {} event payload - ID could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - ID could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1098,7 +1085,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseFloatParameter(parameter, parsedFloat)) {
 					a_outCollisionDefinition.damageMult = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - damageMult could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - damageMult could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1109,7 +1096,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseFloatParameter(parameter, parsedFloat)) {
 					a_outCollisionDefinition.duration = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - duration could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - duration could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1120,7 +1107,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseFloatParameter(parameter, parsedFloat)) {
 					a_outCollisionDefinition.capsuleRadius = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - radius could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - radius could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1131,7 +1118,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseFloatParameter(parameter, parsedFloat)) {
 					a_outCollisionDefinition.radiusMult = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - radius mult could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - radius mult could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1142,7 +1129,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseFloatParameter(parameter, parsedFloat)) {
 					a_outCollisionDefinition.capsuleLength = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - length could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - length could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1153,7 +1140,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseFloatParameter(parameter, parsedFloat)) {
 					a_outCollisionDefinition.lengthMult = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - length mult could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - length mult could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1170,7 +1157,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.transform->rotate.SetEulerAnglesXYZ(parsedNiPoint3);
 				} else {
-					logger::error("Invalid {} event payload - rotation could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - rotation could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1184,7 +1171,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.transform->translate = parsedNiPoint3;
 				} else {
-					logger::error("Invalid {} event payload - translation could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - translation could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1198,7 +1185,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.transform->scale = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - scale could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - scale could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1209,7 +1196,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 				if (parseNiPoint3Parameter(parameter, parsedNiPoint3)) {
 					a_outCollisionDefinition.groundShake = parsedNiPoint3;
 				} else {
-					logger::error("Invalid {} event payload - ground shake could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - ground shake could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1223,7 +1210,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.trailOverride->lifetimeMult = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - trail lifetime mult could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - trail lifetime mult could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1237,7 +1224,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.trailOverride->baseColorOverride = parsedNiColorA;
 				} else {
-					logger::error("Invalid {} event payload - trail base color override could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - trail base color override could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1252,7 +1239,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.trailOverride->baseColorScaleMult = parsedFloat;
 				} else {
-					logger::error("Invalid {} event payload - trail base color scale mult could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - trail base color scale mult could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1266,7 +1253,7 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 					}
 					a_outCollisionDefinition.trailOverride->meshOverride = parsedString;
 				} else {
-					logger::error("Invalid {} event payload - trail mesh override could not be parsed - {}.{}", a_event->tag, a_event->tag, a_event->payload);
+					logger::error("Invalid {} event payload - trail mesh override could not be parsed - {}.{}", a_event->tag.data(), a_event->tag.data(), a_event->payload.data());
 					return false;
 				}
 				break;
@@ -1277,19 +1264,19 @@ bool PrecisionHandler::ParseCollisionEvent(const RE::BSAnimationGraphEvent* a_ev
 	switch (a_eventType) {
 	case CollisionEventType::kAdd:
 		if (a_outCollisionDefinition.nodeName == ""sv) {
-			logger::error("Invalid Collision_Add event payload: node name is missing - {}.{}", a_event->tag, a_event->payload);
+			logger::error("Invalid Collision_Add event payload: node name is missing - {}.{}", a_event->tag.data(), a_event->payload.data());
 			return false;
 		}
 		break;
 	case CollisionEventType::kRemove:
 		if (a_outCollisionDefinition.nodeName == ""sv && !a_outCollisionDefinition.ID) {
-			logger::error("Invalid Collision_Remove event payload: node name and ID are missing - {}.{}", a_event->tag, a_event->payload);
+			logger::error("Invalid Collision_Remove event payload: node name and ID are missing - {}.{}", a_event->tag.data(), a_event->payload.data());
 			return false;
 		}
 		break;
 	case CollisionEventType::kClearTargets:
 		if (a_outCollisionDefinition.nodeName == "sv" && !a_outCollisionDefinition.ID) {
-			logger::error("Invalid Collision_ClearTargets event payload: node name and ID are missing - {}.{}", a_event->tag, a_event->payload);
+			logger::error("Invalid Collision_ClearTargets event payload: node name and ID are missing - {}.{}", a_event->tag.data(), a_event->payload.data());
 			return false;
 		}
 		break;

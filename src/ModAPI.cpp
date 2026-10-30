@@ -77,8 +77,8 @@ namespace Messaging
 
 	float PrecisionInterface::GetAttackCollisionCapsuleLength(RE::ActorHandle a_actorHandle, RequestedAttackCollisionType a_collisionType /*= RequestedAttackCollisionType::Default*/) const noexcept
 	{
-		return PrecisionHandler::GetSingleton()->GetAttackCollisionReach(a_actorHandle, a_collisionType);
-	}
+    return 0.f; // No Precision physical actor/collider in this build.
+}
 
 	APIResult PrecisionInterface::AddWeaponWeaponCollisionCallback(SKSE::PluginHandle a_pluginHandle, WeaponCollisionCallback&& a_callback) noexcept
 	{
@@ -159,28 +159,28 @@ namespace Messaging
 
 	bool PrecisionInterface::IsActorActive(RE::ActorHandle a_actorHandle) const noexcept
 	{
-		return PrecisionHandler::IsActorActive(a_actorHandle);
-	}
+    return false; // No Precision physical actor/collider in this build.
+}
 
 	bool PrecisionInterface::IsActorActiveCollisionGroup(uint16_t a_collisionGroup) const noexcept
 	{
-		return PrecisionHandler::IsActorActiveCollisionGroup(a_collisionGroup);
-	}
+    return false; // No Precision physical actor/collider in this build.
+}
 
 	bool PrecisionInterface::IsActorCharacterControllerHittable(RE::ActorHandle a_actorHandle) const noexcept
 	{
-		return PrecisionHandler::IsActorCharacterControllerHittable(a_actorHandle);
-	}
+    return true; // No Precision physical actor/collider in this build.
+}
 
 	bool PrecisionInterface::IsCharacterControllerHittable(RE::bhkCharacterController* a_characterController) const noexcept
 	{
-		return PrecisionHandler::IsCharacterControllerHittable(a_characterController);
-	}
+    return true; // No Precision physical actor/collider in this build.
+}
 
 	bool PrecisionInterface::IsCharacterControllerHittableCollisionGroup(uint16_t a_collisionGroup) const noexcept
 	{
-		return PrecisionHandler::IsCharacterControllerHittableCollisionGroup(a_collisionGroup);
-	}
+    return true; // No Precision physical actor/collider in this build.
+}
 
 	bool PrecisionInterface::ToggleDisableActor(RE::ActorHandle a_actorHandle, bool a_bDisable) noexcept
 	{

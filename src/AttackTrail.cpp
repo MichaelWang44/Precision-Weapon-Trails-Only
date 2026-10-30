@@ -6,7 +6,7 @@
 #include "render/DrawHandler.h"
 #include "render/line_drawer.h"
 
-AttackTrail::AttackTrail(RE::NiNode* a_node, RE::ActorHandle a_actorHandle, RE::TESObjectCELL* a_cell, RE::InventoryEntryData* a_weaponItem, bool a_bIsLeftHand, bool a_bTrailUseTrueLength, std::optional<TrailOverride> a_trailOverride /*= std::nullopt*/) :
+AttackTrail::AttackTrail(RE::NiNode* a_node, RE::ActorHandle a_actorHandle, RE::TESObjectCELL* a_cell, RE::InventoryEntryData* a_weaponItem, bool a_bIsLeftHand, bool a_bTrailUseTrueLength, std::optional<TrailOverride> a_trailOverride /*= std::nullopt*/, float a_fallbackLength) :
 	actorHandle(a_actorHandle)
 {
 	weaponRotation = RE::NiMatrix3(0.f, RE::NI_HALF_PI, -RE::NI_HALF_PI);
@@ -53,7 +53,7 @@ AttackTrail::AttackTrail(RE::NiNode* a_node, RE::ActorHandle a_actorHandle, RE::
 
 		float length = 0.f;
 		if (!a_bTrailUseTrueLength) {
-			weaponNode = RE::NiPointer<RE::NiNode>(static_cast<RE::NiNode*>(a_node->parent->children[0].get()));
+			weaponNode = RE::NiPointer<RE::NiNode>(a_node->parent->children.empty() || !a_node->parent->children[0] ? nullptr : a_node->parent->children[0]->AsNode());
 			if (weaponNode && weaponNode != collisionNode) {
 				if (a_weaponItem && a_weaponItem->object) {
 					if (auto equippedWeapon = a_weaponItem->object->As<RE::TESObjectWEAP>()) {
@@ -71,11 +71,7 @@ AttackTrail::AttackTrail(RE::NiNode* a_node, RE::ActorHandle a_actorHandle, RE::
 		}
 
 		if (length == 0.f) {
-			Utils::Capsule capsule;
-			Utils::GetCapsuleParams(a_node, capsule);
-
-			length = capsule.a.GetDistance(capsule.b);
-			scale = fmax(length, capsule.radius) * 0.01f;
+            scale = a_fallbackLength * 0.01f;
 		}
 
 		/*RE::NiMatrix3 bloodTrailRotation = collisionParentNode->world.rotate * weaponRotation;
@@ -85,9 +81,14 @@ AttackTrail::AttackTrail(RE::NiNode* a_node, RE::ActorHandle a_actorHandle, RE::
 	}
 }
 
+AttackTrail::~AttackTrail()
+{
+    if (trailParticle) { trailParticle->age = trailParticle->lifetime; }
+}
+
 bool AttackTrail::Update(float a_deltaTime)
 {
-	if (Settings::bDisplayTrails) {
+	if (Settings::bDisplayTrails && !Settings::bDisableMod && collisionNode && collisionParentNode && trailParticle) {
 		if (!bActive) {
 			return false;
 		}
@@ -142,7 +143,7 @@ bool AttackTrail::Update(float a_deltaTime)
 
 					if (fadeNode->children.size() > 0) {
 						auto trailRoot = fadeNode->GetObjectByName("TrailRoot"sv);
-						auto trailRootNode = trailRoot->AsNode();
+						auto trailRootNode = trailRoot ? trailRoot->AsNode() : nullptr;
 						if (trailRootNode && !trailRootNode->children.empty()) {
 							if (trailHistory.size() >= 4) {
 								float segmentsToAdd = 0.f;

@@ -719,7 +719,16 @@ void Settings::ReadSettings()
 
 	logger::info("...success");
 
-	DrawHandler::GetSingleton()->OnSettingsUpdated();
+
+    bAttackCollisionsEnabled = false;
+    bEnableJumpIframes = false;
+    bEnableHitstop = bApplyHitstopToTarget = bEnableHitstopCameraShake = false;
+    bRecoilPlayer = bRecoilNPC = bRecoilPowerAttack = bEnableRecoilCameraShake = false;
+    bApplyImpulseOnHit = bApplyImpulseOnKill = false;
+    bHookAIWeaponReach = bDisableCharacterBumper = bUseRagdollCollisionWhenAllowed = false;
+    bEnableWaterSplashes = false;
+    bDebug = false;
+    logger::info("TrailsOnly: nonvisual settings locked off");
 }
 
 void Settings::OnPostLoadGame()

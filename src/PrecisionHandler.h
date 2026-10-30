@@ -85,6 +85,17 @@ public:
 	virtual EventResult ProcessEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>* a_eventSource) override;
 
 	void Update(float a_deltaTime);
+	void RefreshVisualActors();
+    std::atomic<bool> refreshVisualActorsRequested = true;
+    EventResult ProcessVisualEvent(const RE::BSAnimationGraphEvent* a_event, RE::BSTEventSource<RE::BSAnimationGraphEvent>* a_eventSource);
+    struct VisualEvent {
+        RE::ActorHandle actor;
+        RE::BSFixedString tag;
+        RE::BSFixedString payload;
+        RE::BSTEventSource<RE::BSAnimationGraphEvent>* source;
+    };
+    std::mutex visualEventsLock;
+    std::vector<VisualEvent> visualEvents;
 
 	void StartCollision(RE::ActorHandle a_actorHandle, uint32_t a_activeGraphIdx);
 	bool AddAttack(RE::ActorHandle a_actorHandle, const AttackDefinition& a_attackDefinition);
@@ -407,12 +418,23 @@ public:
 	{
 		RE::ActorHandle actorHandle;
 		CollisionDefinition collisionDefinition;
+        std::weak_ptr<ActiveActor> visualOwner;
+        uint64_t generation = 0;
 
 		DelayedAttackCollisionJob(float a_delay, RE::ActorHandle a_actorHandle, const CollisionDefinition& a_collisionDefinition) :
-			DelayedJob(a_delay), actorHandle(a_actorHandle), collisionDefinition(a_collisionDefinition) {}
+			DelayedJob(a_delay), actorHandle(a_actorHandle), collisionDefinition(a_collisionDefinition) {
+            auto state = PrecisionHandler::GetActiveActor(actorHandle);
+            visualOwner = state;
+            if (state) { generation = state->visualGeneration.load(); }
+        }
 
 		virtual bool Run(float a_deltaTime) override
 		{
+
+            auto state = visualOwner.lock();
+            auto actor = actorHandle.get();
+            if (!state || !actor || actor->IsDead() || !actor->AsActorState()->IsWeaponDrawn() ||
+                state->visualGeneration.load() != generation || Settings::bDisableMod || !Settings::bDisplayTrails) { return true; }
 			timeRemaining -= a_deltaTime;
 			if (timeRemaining > 0.f) {
 				return false;

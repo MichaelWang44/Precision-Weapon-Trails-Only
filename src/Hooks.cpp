@@ -11,24 +11,30 @@
 
 namespace Hooks
 {
+    bool ValidateVisualHooks()
+    {
+        // Skyrim's on-disk Steam image has an encoded .text section. Validate
+        // the live image before writing either call site, failing closed.
+        for (auto address : {
+                 REL::Relocation<uintptr_t>(RELOCATION_ID(35565, 36564)).address() + 0xC26,
+                 REL::Relocation<uintptr_t>(RELOCATION_ID(38112, 39068)).address() + 0xFC }) {
+            if (*reinterpret_cast<const uint8_t*>(address) != 0xE8) {
+                logger::critical("TrailsOnly hook validation failed at {:X}: expected E8, found {:02X}", address, *reinterpret_cast<const uint8_t*>(address));
+                return false;
+            }
+        }
+        logger::info("TrailsOnly: live 1.6.1170 call-site opcode checks passed");
+        return true;
+    }
+
 	void Install()
 	{
-		logger::trace("Hooking...");
-
-		UpdateHooks::Hook();
-		AttackHooks::Hook();
-
-		AIHooks::Hook();
-
-		HavokHooks::Hook();
-
-		CameraShakeHook::Hook();
-		MovementHook::Hook();
-
-		FirstPersonStateHook::Hook();
-
-		logger::trace("...success");
-	}
+        // Trails-only: no attack, AI, Havok physics, camera shake or movement hooks.
+        UpdateHooks::Hook();
+        HavokHooks::Hook();  // Only the original post-physics scheduling call, see Hook().
+        FirstPersonStateHook::Hook();
+        logger::info("TrailsOnly: visual update/actor registration/view cleanup installed; combat and physics hooks absent");
+}
 
 	bool ActorHasAttackCollision(const RE::ActorHandle a_actorHandle)
 	{
@@ -40,7 +46,6 @@ namespace Hooks
 		_Nullsub();
 
 		PrecisionHandler::GetSingleton()->Update(*g_deltaTime);
-		DrawHandler::GetSingleton()->Update(*g_deltaTime);
 	}
 
 	void UpdateHooks::ApplyMovement(RE::Actor* a_this, float a_deltaTime)
@@ -327,252 +332,9 @@ namespace Hooks
 
 	void HavokHooks::ProcessHavokHitJobs(void* a1)
 	{
-		_ProcessHavokHitJobs(a1);
-
-		enum class hkpKnownWorldExtensionIds : int32_t
-		{
-			kAnonymous = -1,
-			kBreakOffParts = 1000,
-			kCollisionCallback = 1001
-		};
-
-		auto playerCharacter = RE::PlayerCharacter::GetSingleton();
-
-		auto cell = playerCharacter->GetParentCell();
-		if (!cell) {
-			return;
-		}
-
-		auto world = RE::NiPointer<RE::bhkWorld>(cell->GetbhkWorld());
-		if (!world) {
-			return;
-		}
-
-		ContactListener* contactListener = &PrecisionHandler::contactListener;
-
-		auto precisionHandler = PrecisionHandler::GetSingleton();
-
-		if (world.get() != PrecisionHandler::contactListener.world) {
-			precisionHandler->Clear();
-
-			// Havok world changed
-			{
-				RE::BSWriteLockGuard lock(world->worldLock);
-
-				RE::bhkCollisionFilter* filter = static_cast<RE::bhkCollisionFilter*>(world->GetWorld2()->collisionFilter);
-
-				// run callbacks from other plugins
-				precisionHandler->RunPrecisionLayerSetupCallbacks();
-
-				AddPrecisionCollisionLayers(world.get());
-
-				if (!hkpWorld_hasContactListener(world->GetWorld2(), contactListener)) {
-					hkpCollisionCallbackUtil_requireCollisionCallbackUtil(world->GetWorld2());
-					hkpWorld_addContactListener(world->GetWorld2(), contactListener);
-					//hkpWorld_addWorldPostSimulationListener(world->GetWorld2(), &PrecisionHandler::contactListener);
-				}
-
-				// run callbacks from other plugins
-				precisionHandler->RunCollisionFilterSetupCallbacks(filter);
-			}
-
-			PrecisionHandler::contactListener.world = world.get();
-			worldChangedTime = 0.f;
-		}
-
-		EnsurePrecisionCollisionLayers(world.get());
-
-		{  // Ensure our listener is the last one (will be called first)
-			RE::hkArray<RE::hkpContactListener*>& listeners = world->GetWorld2()->contactListeners;
-			if (listeners[listeners.size() - 1] != contactListener) {
-				RE::BSWriteLockGuard lock(world->worldLock);
-
-				int numListeners = listeners.size();
-				int listenerIndex = -1;
-
-				// get current index of our listener
-				for (int i = 0; i < numListeners; ++i) {
-					if (listeners[i] == contactListener) {
-						listenerIndex = i;
-						break;
-					}
-				}
-
-				if (listenerIndex >= 0) {
-					for (int i = listenerIndex + 1; i < numListeners; ++i) {
-						listeners[i - 1] = listeners[i];
-					}
-					listeners[numListeners - 1] = contactListener;
-				}
-			}
-		}
-
-		if (worldChangedTime < Settings::fWorldChangedWaitTime) {
-			worldChangedTime += *g_deltaTime;
-			return;
-		}
-
-		const float activeDistanceSq = Settings::fActiveActorDistance * Settings::fActiveActorDistance;
-		const float startDistanceSq = activeDistanceSq * (1 + Settings::fActiveDistanceHysteresis);
-		const float endDistanceSq = activeDistanceSq * (1 - Settings::fActiveDistanceHysteresis);
-
-		auto processActor = [&](RE::ActorHandle actorHandle) {
-			if (auto actor = actorHandle.get().get()) {
-				if (!actor || !actor->Get3D()) {
-					return;
-				}
-
-				uint32_t filterInfo = 0;
-				auto charController = actor->GetCharController();
-				if (charController) {
-					charController->GetCollisionFilterInfo(filterInfo);
-				}
-				uint16_t collisionGroup = filterInfo >> 16;
-
-				bool bIsHittableCharController = PrecisionHandler::IsCharacterControllerHittableCollisionGroup(collisionGroup);
-
-				bool bIsActorDisabled = PrecisionHandler::IsActorDisabled(actorHandle);
-
-				bool bIsActorDead = actor->IsDead();
-
-				bool bShouldAddToWorld = !Settings::bDisableMod && !bIsActorDisabled && !bIsActorDead && actor->GetPosition().GetSquaredDistance(playerCharacter->GetPosition()) < startDistanceSq;
-				bool bShouldRemoveFromWorld = Settings::bDisableMod || bIsActorDisabled || bIsActorDead || actor->GetPosition().GetSquaredDistance(playerCharacter->GetPosition()) > endDistanceSq;
-
-				bool bIsAddedToWorld = IsSkeletonAddedToWorld(actorHandle);
-
-				bool bActiveActorsContainsHandle = PrecisionHandler::IsActorActive(actorHandle);
-				bool bIsRagdollAdded = PrecisionHandler::IsRagdollAdded(actorHandle);
-				bool bIsRagdollAddedToWorld = IsRagdollAddedToWorld(actorHandle);
-
-				bool bIsActiveActor = bActiveActorsContainsHandle || bIsHittableCharController;
-				bool bCanAddToWorld = CanAddToWorld(actorHandle);
-
-				// Queue active ragdoll for removal if it's added even though ragdoll isn't
-				if (bIsRagdollAdded && !bIsRagdollAddedToWorld) {
-					WriteLocker locker(PrecisionHandler::ragdollsToRemoveLock);
-					PrecisionHandler::ragdollsToRemove.emplace(actor->GetHandle());
-				}
-
-				if (bShouldAddToWorld) {
-					if (!bIsAddedToWorld || !bIsActiveActor) {
-						if (bCanAddToWorld) {
-							AddSkeletonToWorld(actorHandle);
-							if (auto race = actor->GetRace()) {
-								if (race->data.flags.any(RE::RACE_DATA::Flag::kAllowRagdollCollision)) {
-									WriteLocker locker(PrecisionHandler::ragdollCollisionGroupsLock);
-									PrecisionHandler::ragdollCollisionGroups.insert(collisionGroup);
-								}
-							}
-						} else {
-							// There is no ragdoll instance, but we still need a way to hit the enemy, e.g. for the wisp (witchlight).
-							// In this case, we need to register collisions against their charcontroller.
-							WriteLocker locker(PrecisionHandler::hittableCharControllerGroupsLock);
-							PrecisionHandler::hittableCharControllerGroups.insert(collisionGroup);
-						}
-
-						if (actorHandle.native_handle() == 0x100000) {
-							PrecisionHandler::AddPlayerSink();
-						} else {
-							PrecisionHandler::AddActorSink(actor);
-						}
-					}
-
-					// Add ragdoll if needed
-					if (!bIsRagdollAdded && bCanAddToWorld) {
-						bool bShouldAddRagdollToWorld = false;
-						{
-							ReadLocker locker(PrecisionHandler::ragdollsToAddLock);
-							bShouldAddRagdollToWorld = PrecisionHandler::ragdollsToAdd.contains(actorHandle);
-						}
-						if (bShouldAddRagdollToWorld) {
-							if (!bIsRagdollAddedToWorld || !bIsRagdollAdded) {
-								AddRagdollToWorld(actorHandle);
-							}
-						}
-					}
-
-					if (bIsRagdollAdded) {
-						// Sometimes the game re-enables sync-on-update e.g. when switching outfits, so we need to make sure it's disabled.
-						DisableSyncOnUpdate(actor);
-
-						if (Settings::bForceAnimationUpdateForActiveActors) {
-							// Force the game to run the animation graph update (and hence driveToPose, etc.)
-							actor->GetActorRuntimeData().boolFlags.set(RE::Actor::BOOL_FLAGS::kForceAnimGraphUpdate);
-						}
-					}
-				} else if (bShouldRemoveFromWorld) {
-					if (bIsAddedToWorld) {
-						if (bCanAddToWorld) {
-							RemoveSkeletonFromWorld(actorHandle);
-
-							bool bIsRagdollCollision = false;
-
-							{
-								ReadLocker locker(PrecisionHandler::ragdollCollisionGroupsLock);
-								bIsRagdollCollision = PrecisionHandler::ragdollCollisionGroups.size() > 0 && PrecisionHandler::ragdollCollisionGroups.contains(collisionGroup);
-							}
-
-							if (bIsRagdollCollision) {
-								WriteLocker locker(PrecisionHandler::ragdollCollisionGroupsLock);
-								PrecisionHandler::ragdollCollisionGroups.erase(collisionGroup);
-							}
-						} else {
-							if (bIsHittableCharController) {
-								WriteLocker locker(PrecisionHandler::hittableCharControllerGroupsLock);
-								PrecisionHandler::hittableCharControllerGroups.erase(collisionGroup);
-							}
-						}
-
-						if (actorHandle.native_handle() == 0x100000) {
-							PrecisionHandler::RemovePlayerSink();
-						} else {
-							PrecisionHandler::RemoveActorSink(actor);
-						}
-					}
-				}
-
-				// Remove ragdoll if necessary
-				bool bShouldRemoveRagdollFromWorld = ShouldRemoveRagdollFromWorld(actorHandle);
-				if (bShouldRemoveFromWorld || bShouldRemoveRagdollFromWorld) {
-					if (bIsRagdollAdded && bCanAddToWorld) {
-						RemoveRagdollFromWorld(actorHandle);
-					}
-				}
-
-				//// bonus fix for character controller position desync with 'tai'
-				//if (charController && !actor->GetActorRuntimeData().boolBits.any(RE::Actor::BOOL_BITS::kProcessMe) && bIsHittableCharController) {
-				//	auto actorRoot = actor->Get3D();
-				//	auto rootPos = actorRoot->world.translate;
-				//	auto rootPosHavok = rootPos * *g_worldScale;
-
-				//	RE::hkTransform transform;
-				//	charController->GetTransformImpl(transform);
-				//	float zOffset = transform.translation.quad.m128_f32[2] - rootPosHavok.z;
-				//	transform.translation = Utils::NiPointToHkVector(rootPosHavok);
-				//	transform.translation.quad.m128_f32[2] += zOffset;
-				//	charController->SetTransformImpl(transform);
-				//}
-			}
-		};
-
-		{
-			processActor(playerCharacter->GetHandle());
-
-			auto processLists = RE::ProcessLists::GetSingleton();
-			for (auto& actorHandle : processLists->highActorHandles) {
-				processActor(actorHandle);
-			}
-		}
-
-		{
-			WriteLocker locker(PrecisionHandler::ragdollsToAddLock);
-			WriteLocker locker2(PrecisionHandler::ragdollsToRemoveLock);
-			PrecisionHandler::ragdollsToAdd.clear();
-			PrecisionHandler::ragdollsToRemove.clear();
-		}
-
-		precisionHandler->ProcessPostHavokHitJobs();
-	}
+        _ProcessHavokHitJobs(a1);
+        PrecisionHandler::GetSingleton()->refreshVisualActorsRequested = true;
+}
 
 	void HavokHooks::BShkbAnimationGraph_UpdateAnimation(RE::BShkbAnimationGraph* a_this, RE::BShkbAnimationGraph_UpdateData* a_updateData, void* a3)
 	{
@@ -1550,7 +1312,7 @@ namespace Hooks
 							for (auto constraint : a_driver->ragdoll->constraints) {
 								if (constraint->data->GetType() == RE::hkpConstraintData::ConstraintType::kRagdoll) {
 									RE::hkpRagdollConstraintData* data = static_cast<RE::hkpRagdollConstraintData*>(constraint->data);
-									if (constraint->constraintInternal) {  // needed to tell master from slave
+									if (constraint->internal) {  // needed to tell master from slave
 										RE::hkpRigidBody* bodyA = constraint->GetRigidBodyA();
 										RE::hkpRigidBody* bodyB = constraint->GetRigidBodyB();
 
@@ -1563,7 +1325,7 @@ namespace Hooks
 										RE::hkVector4 pivotB;
 										hkVector4_setTransformedPos(pivotB, bodyB->motion.motionState.transform, pivotBbodySpace);
 
-										RE::hkVector4 slavePivot = bodyA == constraint->constraintInternal->entities[1 - constraint->constraintInternal->whoIsMaster] ? pivotA : pivotB;
+										RE::hkVector4 slavePivot = bodyA == constraint->internal->entities[1 - constraint->internal->whoIsMaster] ? pivotA : pivotB;
 
 										SetPivotInWorldSpace(data, bodyA->motion.motionState.transform, bodyB->motion.motionState.transform, slavePivot);
 									}

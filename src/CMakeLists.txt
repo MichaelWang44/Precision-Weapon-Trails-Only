@@ -100,8 +100,6 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
 			"/utf-8"	# Set Source and Executable character sets to UTF-8
 #			"/Zi"	# Debug Information Format
 
-			"/await"
-
 			"/permissive-"	# Standards conformance
 			"/Zc:preprocessor"	# Enable preprocessor conformance mode
 
